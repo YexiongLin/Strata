@@ -100,8 +100,8 @@ def flow_for(ctx, family: str | None = None) -> list[str]:
         return ["model", "folder", "context", "pictures", "access", "save"]
     if fam == "inkling-2-mini":
         if len(ctx.computer.usable_gpus) >= 2:
-            return ["model", "folder", "cards", "context", "pictures", "drafting", "parallel", "access", "save"]
-        return ["model", "folder", "context", "pictures", "drafting", "parallel", "access", "save"]
+            return ["model", "folder", "cards", "context", "pictures", "drafting", "parallel", "tuning", "access", "save"]
+        return ["model", "folder", "context", "pictures", "drafting", "parallel", "tuning", "access", "save"]
     ids = [sid for sid, _ in STEPS]
     if len(ctx.computer.usable_gpus) < 2:
         ids.remove("cards")
@@ -2173,7 +2173,7 @@ class SaveScreen(Base):
         else:
             st = self.ctx.model_state()
             fetch = "Nothing needs to be downloaded." if st.remaining_gb < 0.05 else f"Strata downloads about {st.remaining_gb:.0f} GB first."
-        tune = " It tunes first." if self.ctx.settings.tune != "skip" and self.ctx.settings.family not in ("hy4-flash", "inkling-2-mini") else ""
+        tune = " It tunes first." if self.ctx.settings.tune != "skip" and self.ctx.settings.family != "hy4-flash" else ""
         return Text(f"Press Enter on the first choice to save and start. {fetch}{tune} The Strata monitor opens in this window when it is serving; "
                     "no web page opens by itself.", style=MUTE)
 

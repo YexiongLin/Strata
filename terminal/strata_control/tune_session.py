@@ -109,7 +109,16 @@ _FACTS = [
     ("avail_gib", re.compile(r"available ([\d.]+) GiB \(MemAvailable"), float),
     ("loaded_gib", re.compile(r"loaded ([\d.]+) GiB at"), float),
     ("batch_slots", re.compile(r"batch_slots=(\d+)"), int),            # #4821: how many requests the engine really decodes together
+    # strata-inkling: how much of the conversation its global KV keeps in VRAM and how much in mapped host RAM (the Auto
+    # Host KV Offload / Offload ON lines at start, an elastic spill later), and a max context it had to shorten
+    ("kv_vram_tokens", re.compile(r"(?:global KV = |global visits = |mapped host RAM: )(\d+) VRAM \+ \d+ (?:mapped host tokens|host)"), int),
+    ("kv_host_tokens", re.compile(r"(?:global KV = |global visits = |mapped host RAM: )\d+ VRAM \+ (\d+) (?:mapped host tokens|host)"), int),
+    ("ctx_auto_sized", re.compile(r"Auto-sizing max_ctx \d+ -> (\d+)"), int),
 ]
+
+
+#: an engine refusing a flag it does not know (strata-inkling says "unknown option")
+_UNKNOWN_FLAG = re.compile(r"unknown argument|unknown option|unrecognized (?:argument|option)", re.I)
 
 
 def parse_facts(text: str) -> dict[str, Any]:
@@ -128,7 +137,7 @@ def parse_facts(text: str) -> dict[str, Any]:
     # the engine's low-RAM resident mode (--resident-experts) says so in its log; "resident experts" alone is the GPU cache's own wording
     facts["resident_ram"] = bool(re.search(r"resident ram mode|resident complement|resident [\d.]+ gib, pinned|low-ram mode", low))
     facts["hybrid_experts"] = "hybrid experts" in low or "hybrid:" in low
-    facts["unknown_argument"] = bool(re.search(r"unknown argument|unrecognized (?:argument|option)", low))
+    facts["unknown_argument"] = bool(_UNKNOWN_FLAG.search(text))
     return facts
 
 
@@ -157,7 +166,7 @@ def failure_kind(text: str, returncode: int | None) -> tuple[str, str]:
              if re.search(r"unknown argument|unrecognized|invalid value|out of memory|cannot|failed|error|refus|killed", ln, re.I)
              and not re.search(r"memory guard: (?:limit|the available)", ln, re.I)]
     reason = " | ".join(lines[:3])[:300]
-    if re.search(r"unknown argument|unrecognized (argument|option)", low):
+    if _UNKNOWN_FLAG.search(text):
         return "UNSUPPORTED", reason or "the engine does not accept one of the settings"
     if _CUDA_BUSY.search(text):
         return "FAIL_BOOT", ("the graphics card could not be opened by the measuring engine; it is probably in use by the "

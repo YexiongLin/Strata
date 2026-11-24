@@ -103,17 +103,19 @@ def choices_from_config(cfg: dict[str, Any], *, use: str = "chat") -> dict[str, 
     profile = cfg.get("ui_resource_profile")
     reserve = cfg.get("vram_reserve_mib")
     room = profile == "work"
+    from serve import inkling_kind
+    ink = bool(inkling_kind.is_inkling(cfg))
     return {
         "model": str(cfg.get("model_name") or Path(native).stem or "model"),
         "quant": quant.group(1).upper() if quant else None,
         "model_file": native,
         "context": int(ctx) if ctx and ctx.isdigit() else None,
-        "kv": val("--kv") or "int8",
+        "kv": val("--kv") or ("fp16" if ink else "int8"),   # strata-inkling's own default is lossless fp16
         "vision": bool(cfg.get("ui_vision_enabled")) or "--vision" in args,
         "goal": "room" if room else "speed",
         "reserve_mib": int(reserve) if isinstance(reserve, (int, float)) else 0,
         "use": use,
-        "family": "qwen36" if (val("--mtp") or "").isdigit() else "flash-next",
+        "family": "inkling-2-mini" if ink else ("qwen36" if (val("--mtp") or "").isdigit() else "flash-next"),
     }
 
 

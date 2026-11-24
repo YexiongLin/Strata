@@ -38,6 +38,8 @@ def _verdict(arm: dict[str, Any]) -> str:
         return f"faster, {against}" if against else "faster"
     if status == "dropped":
         return "slower, stopped after one round"
+    if status == "rejected":
+        return f"not taken: {arm.get('reason') or 'it costs something the measurement cannot see'}"
     return f"not faster by enough: {against}" if against else "not faster by enough"
 
 

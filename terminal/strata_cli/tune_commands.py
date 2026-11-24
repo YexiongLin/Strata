@@ -261,27 +261,6 @@ def _hw_hash(identity: dict[str, Any]) -> str:
 
 
 HY4_NO_TUNING = "Tencent Hy4-Flash needs no tuning: its speed and memory placement are set automatically by strata-hy4."
-INKLING_NO_TUNING = "Inkling-2-Mini needs no tuning: its speed and memory placement are set automatically by strata-inkling."
-
-
-def _is_inkling_target_name(target: str) -> bool:
-    from serve import inkling_kind
-    t = (target or "").strip().lower()
-    if t.startswith("inkling-2-mini") or "/inkling-2-mini" in t or t in ("sq-10", "sq-15", "sq-20"):
-        return True
-    if "/" in t:
-        fam, _, size = t.partition("/")
-        if fam.strip() == "inkling-2-mini" or size.strip() in ("sq-10", "sq-15", "sq-20"):
-            return True
-    try:
-        p = Path(target)
-        if p.is_file():
-            raw = json.loads(p.read_text(encoding="utf-8-sig"))
-            if isinstance(raw, dict) and inkling_kind.is_inkling(raw):
-                return True
-    except (OSError, ValueError):
-        pass
-    return False
 
 
 def _is_hy4_target_name(target: str) -> bool:
@@ -318,13 +297,10 @@ def auto(a: argparse.Namespace) -> int:
     except Exception as e:  # noqa: BLE001
         if _is_hy4_target_name(getattr(a, "target", "")):
             return _fail(HY4_NO_TUNING, 2, machine)
-        if _is_inkling_target_name(getattr(a, "target", "")):
-            return _fail(INKLING_NO_TUNING, 2, machine)
         return _fail(str(e), getattr(e, "exit_code", 2), machine)
     if hy4_kind.is_hy4(cfg) or _is_hy4_target_name(getattr(a, "target", "")):
         return _fail(HY4_NO_TUNING, 2, machine)
-    if inkling_kind.is_inkling(cfg) or _is_inkling_target_name(getattr(a, "target", "")):
-        return _fail(INKLING_NO_TUNING, 2, machine)
+    is_ink = bool(inkling_kind.is_inkling(cfg))     # strata-inkling: its own knobs (tune_knobs class I)
     if not 0 <= a.leave_ram <= 50:
         return _fail("--leave-ram is a percentage from 0 to 50", 2, machine)
     if a.leave_ram and goal == "speed":
@@ -342,7 +318,8 @@ def auto(a: argparse.Namespace) -> int:
     opts = autotune.Options(mode=a.mode, goal=goal, reserve_mib=reserve, ram_wish_pct=a.leave_ram, use=a.use,
                             allow_placement=a.allow_small_differences, allow_nonrepeatable=a.allow_not_repeatable,
                             budget_s=(a.minutes * 60.0 if a.minutes else None), check_busy=not a.no_quiet_check, concurrency=concurrency)
-    ctx = autotune.context_from_config(cfg, engine_backend=backend, opts=opts, engine_flags=flags)
+    ctx = autotune.context_from_config(cfg, engine_backend=backend, opts=opts, engine_flags=flags,
+                                       family="inkling-2-mini" if is_ink else None)
     hw = _hw_hash(identity)
     digest = (identity.get("model") or {}).get("sha256_shard1")
     bad = presets.bad_signatures(hw_hash=hw, model_digest=digest, engine_sha=(identity.get("engine") or {}).get("sha256"))

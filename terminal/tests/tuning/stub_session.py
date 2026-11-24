@@ -15,7 +15,7 @@ class StubEngine:
         self.s = session
         self.args = args
         self.env = env
-        self.facts = dict(session.facts)
+        self.facts = dict(session.facts_for(args)) if session.facts_for else dict(session.facts)   # what the engine's log says for these flags
 
     def _rate(self, tune: dict[str, Any] | None = None) -> float:
         base = self.s.model(self.args, self.env, tune)
@@ -44,7 +44,8 @@ class StubSession:
     def __init__(self, *, model: Callable[..., float], pp: Callable[..., float] | None = None, noise: float = 0.005,
                  seed: int = 1, facts: dict[str, Any] | None = None, fail: Callable[[list[str], dict], StartFailed | None] | None = None,
                  rss: Callable[..., float] | None = None, vram: Callable[..., float] | None = None, avail: float = 40000,
-                 run_s: float = 90.0, clock: Any = None, load: Callable[..., float] | None = None) -> None:
+                 run_s: float = 90.0, clock: Any = None, load: Callable[..., float] | None = None,
+                 facts_for: Callable[[list[str]], dict[str, Any]] | None = None) -> None:
         self.clock = clock
         self.load = load            # #4821: all requests' tokens/s with `clients` decoding at once, from the flags (default: 3 x the solo speed)
         self.model = model
@@ -52,6 +53,7 @@ class StubSession:
         self.noise = noise
         self.rng = random.Random(seed)
         self.facts = facts or {"workers": 6, "slots": 3000, "resident_ram": False}
+        self.facts_for = facts_for  # facts that depend on the flags (the engine's KV placement); None: the same facts for every run
         self.fail = fail
         self.rss = rss or (lambda a, e: 12000.0)
         self.vram = vram or (lambda a: 10000.0)

@@ -2296,7 +2296,7 @@ class Runner:
     # ---- 4. tuning
     def tune(self) -> None:
         s = self.s
-        if s.tune == "skip" or self.is_native_strata_family():   # Hy4-Flash and Inkling-2-Mini have no Qwen tuning knobs
+        if s.tune == "skip" or self.is_hy4():                  # Hy4-Flash has no tuning knobs; Inkling-2-Mini has its own (tune_knobs class I)
             return
         from strata_control import presets
         if not self.retune:

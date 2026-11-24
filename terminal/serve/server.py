@@ -3531,6 +3531,12 @@ def nodraft_retry_args(cfg: dict, exe: str | None, extra: list[str] | None = Non
     return alt if alt != first + list(extra or []) else None
 
 
+def takes_saved_tuning(engine: str, cfg: dict) -> bool:
+    """Whether a start puts the active saved tuning (strata_control/presets.py) on top of its run config: Strata's own
+    engines do, Inkling-2-Mini included (its class I arms in strata_control/tune_knobs.py); Hy4-Flash has no tuning."""
+    return engine == "strata" and not hy4_kind.is_hy4(cfg)
+
+
 def engine_args(cfg: dict, exe: str | None = None, *, announce: bool = True) -> list[str]:
     """The engine's arguments: the config's, and with several GPUs the layer split across them ("layer_split" in the
     config: "auto" by default, or the first layer of each later GPU's share, e.g. "18" or "16,32"; see
@@ -8755,7 +8761,7 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
     if _ds:                                             # DeepSeek: this Strata no longer runs it; stop before the engine starts (retired.py)
         print(retired.server_line(_ds), flush=True)
         return 2
-    if a.config and a.engine == "strata" and not hy4_kind.is_hy4(cfg) and not inkling_kind.is_inkling(cfg):     # (custom shape engines have no Flash-Next tuning knobs)
+    if a.config and takes_saved_tuning(a.engine, cfg):
         cfg = apply_saved_tuning(cfg)
     attestation_key = os.environ.pop("STRATA_OWNER_ATTEST_KEY", None)
     launch_attestation = None

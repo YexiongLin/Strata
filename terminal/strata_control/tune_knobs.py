@@ -71,7 +71,8 @@ class Arm:
     goals: tuple[str, ...] = ("speed", "coding", "chat", "room")
     ram_delta_mib: int = 0                       # extra memory the engine is predicted to take over the base run
     deep_only: bool = False
-    #: what a win is judged on: "decode" (the goal's metric) or "prompt" (long-prompt speed; the knob costs no decode speed)
+    #: what a win is judged on: "decode" (the goal's metric) or "prompt" (long-prompt speed; the knob costs no decode speed).
+    #: Either way a run that keeps less of the conversation in VRAM is not taken (autotune.kv_residency_cost).
     metric: str = "decode"
     #: a dynamic value: name of a computed number ("workers-2" ...), filled from the base run's engine log
     dynamic: dict[str, str] = field(default_factory=dict)
@@ -79,6 +80,15 @@ class Arm:
     def requires_flags(self) -> list[str]:
         return [f for f in self.set_args if self.set_args[f] is not None]
 
+
+#: strata-inkling's prompt chunk. Measured on an RTX 4090 (SQ-20, temperature 0, 2026-11-24): --chunk 1024 and 2048 gave a
+#: different answer to a 4.5K-token prompt than the default 512 (shorter prompts the same; the default itself repeated byte for byte)
+#: and read a 2.6K-token prompt 33% faster. So it is a "placement" setting: tried only when answers may differ slightly.
+#: --draft off also changed the long answer; it was 58% faster on prose and 52% slower on arithmetic (DSpark depends on the text).
+#: The larger chunk's workspace comes out of the global KV's VRAM: at 128K with k8v8 and 3 slots --chunk 1024 kept 13568
+#: instead of 15360 tokens in VRAM, and decode at 19K-38K-token prompts was ~8% slower (the tuner's short decodes do not
+#: show it; autotune.kv_residency_cost rejects such a run from the engine's own KV line).
+INK_CHUNK_ANSWER = "placement"
 
 ARMS: tuple[Arm, ...] = (
     # --- long contexts (spec 4.3, 3.3): exact, measured +5.4% decode (5/5) at 128K on the R9700 --------------------------------
@@ -121,17 +131,24 @@ ARMS: tuple[Arm, ...] = (
         dynamic={"--pool-workers": "workers-1"}, needs=("hybrid_cpu",), deep_only=True),
     Arm("kv_grow", "Allocate the conversation memory as it grows", "exact", {"--kv-grow": True},
         classes=("B", "C"), backends=("cuda", "hip", "sycl"), deep_only=True),
+    # --- Inkling-2-Mini (strata-inkling, class I): prompt chunk and the DSpark drafter -----------------------------------------
+    Arm("ink_chunk_1024", "Larger prompt chunks (faster long prompts)", INK_CHUNK_ANSWER, {"--chunk": 1024},
+        families=("inkling-2-mini",), backends=("cuda",), classes=("I",), metric="prompt"),
+    Arm("ink_chunk_2048", "Even larger prompt chunks (faster very long prompts)", INK_CHUNK_ANSWER, {"--chunk": 2048},
+        families=("inkling-2-mini",), backends=("cuda",), classes=("I",), metric="prompt", ram_delta_mib=512),
+    Arm("ink_draft_off", "Answer without the DSpark drafter", "placement", {"--draft": "off"},
+        families=("inkling-2-mini",), backends=("cuda",), classes=("I",)),
 )
 
 #: The per-request settings (3.1, 4.1). They need no restart, so every one is tried before any restart (5).
 #: `values` are tried against the engine's own choice (absent); a win needs >= 3% in every round.
 PER_REQUEST: tuple[dict[str, Any], ...] = (
     {"key": "pcie_frac", "values": (0.2, 0.35, 0.0), "backends": ("cuda", "hip", "sycl"),
-     "label": "PCIe share", "answer": "placement"},
+     "label": "PCIe share", "answer": "placement", "families": ("flash-next", "qwen36")},
     {"key": "spec_min_p", "values": (0.7, 0.5), "backends": ("cuda", "hip", "sycl", "metal"),
-     "label": "speculative confidence floor", "answer": "exact"},
+     "label": "speculative confidence floor", "answer": "exact", "families": ("flash-next", "qwen36")},
     {"key": "aux_cpus", "values": (1, 0), "backends": ("cuda", "hip"), "label": "spare CPU cores for helper threads",
-     "answer": "exact"},
+     "answer": "exact", "families": ("flash-next", "qwen36")},   # strata-inkling takes none of these per request
 )
 
 # --------------------------------------------------------------------------- bounds and the never list
@@ -149,6 +166,8 @@ BOUNDS: dict[str, dict[str, Any]] = {
     "--host-core": {"choices": ("first", "last")},
     "--kv-resident": {"choices": (32768, 49152, 65536)},
     "--prefill": {"choices": ("auto", "auto:16384", "auto:32768", 2048, 4096)},
+    "--chunk": {"choices": (512, 1024, 2048)},                    # strata-inkling's prompt chunk
+    "--draft": {"choices": ("auto", "dspark", "off")},            # strata-inkling's drafter
 }
 
 #: The never-pick list (4.5), as rows: ``flag`` (or ``env``), a condition on the machine, the value test and the reason
@@ -185,6 +204,7 @@ ANSWER_OF_FLAG: dict[str, str] = {
     "--adapt-swaps": "placement", "--adapt-decay": "placement", "--adapt-min-gain": "placement",
     "--pcie-frac": "placement", "--spec": "placement", "--mtp": "placement", "--lookup-chain": "placement",
     "--kv": "quality", "--adapt-async": "nonrepeatable",
+    "--chunk": INK_CHUNK_ANSWER, "--draft": "placement",           # strata-inkling
 }
 
 
@@ -195,7 +215,7 @@ class Context:
     """The machine and the choices a candidate plan is made for."""
 
     backend: str = "cuda"                 # cuda | hip | sycl | metal | cpu
-    family: str = "flash-next"            # flash-next | qwen36
+    family: str = "flash-next"            # flash-next | qwen36 | inkling-2-mini
     gpu_count: int = 1
     vram_mib: int = 0                     # the card the model runs on (smallest if several)
     ram_gib: int = 0
@@ -236,6 +256,8 @@ def condition_holds(name: str, ctx: Context) -> bool:
 def machine_classes(ctx: Context) -> list[str]:
     """The classes of 6.2 this machine belongs to, in the order their candidate lists are walked."""
     classes: list[str] = []
+    if ctx.family == "inkling-2-mini":
+        return ["I"]                       # strata-inkling has its own knobs (the I arms) and none of the Qwen ones
     if ctx.family == "qwen36":
         classes.append("D" if ctx.facts.get("hybrid_experts") else "E")
         return classes

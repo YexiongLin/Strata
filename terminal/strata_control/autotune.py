@@ -88,7 +88,7 @@ class ArmReport:
     settings: dict[str, Any]
     env: dict[str, Any]
     answer: str
-    status: str = "pending"        # pending | tested | dropped | failed | skipped
+    status: str = "pending"        # pending | tested | dropped | rejected | failed | skipped
     reason: str = ""
     runs: list[dict[str, Any]] = field(default_factory=list)       # per round: ratios vs that round's base
     ratio_decode: float | None = None
@@ -160,6 +160,33 @@ def metric(run: dict[str, Any] | RunResult, use: str) -> float | None:
         if p:
             return math.sqrt(d * p)
     return float(d)
+
+
+#: the global KV is placed in steps of 256 tokens: a candidate within one step of the base keeps the same conversation in VRAM
+KV_STEP_TOKENS = 256
+
+
+def kv_residency_cost(cand: dict[str, Any], base: dict[str, Any]) -> str | None:
+    """The cost a candidate pays in conversation memory, from the engine log facts of its run and the base's (strata-inkling
+    reports where its global KV went; other engines report nothing and are never charged). Decode is measured on short
+    prompts, which sit in VRAM either way, so a setting that keeps fewer conversation tokens in VRAM, or makes the engine
+    shorten the conversation it can hold, is slower in long conversations by an amount the measurement cannot see.
+    None when it costs nothing; otherwise the plain reason it is not taken."""
+    cut = cand.get("ctx_auto_sized")
+    if cut is not None and (base.get("ctx_auto_sized") is None or cut < base["ctx_auto_sized"]):
+        return f"the engine could only hold {cut} tokens of conversation with it"
+    host = cand.get("kv_host_tokens")
+    vram = cand.get("kv_vram_tokens")
+    if not host or vram is None:
+        return None                       # the whole conversation stays in graphics memory (or the engine does not say)
+    tail = "so long conversations would answer more slowly, which short test prompts cannot show"
+    if base.get("kv_vram_tokens") is None:
+        return f"it moves {host} tokens of the conversation out of graphics memory into RAM, {tail}"
+    lost = base["kv_vram_tokens"] - vram
+    if lost > KV_STEP_TOKENS:
+        return (f"it keeps {lost} fewer tokens of the conversation in graphics memory ({vram} instead of "
+                f"{base['kv_vram_tokens']}), {tail}")
+    return None
 
 
 def median_ratio(ratios: list[float]) -> float | None:
@@ -508,6 +535,11 @@ class Tuner:
                     rep.status, rep.reason = "failed", over
                     alive = [x for x in alive if x.arm.id != p.arm.id]
                     continue
+                cost = kv_residency_cost(res.facts, base1.facts)
+                if cost:                          # measured, but its speed is paid for with conversation memory
+                    rep.status, rep.reason = "rejected", cost
+                    alive = [x for x in alive if x.arm.id != p.arm.id]
+                    continue
                 round_runs[rnd][p.arm.id] = res
             # a candidate that lost by more than the margin against its own round's base is dropped from later rounds
             for p in list(alive):
@@ -646,7 +678,7 @@ class Tuner:
                 r.outcome = "inconclusive"
                 r.reason_code = "noisy"
                 r.message = "The PC was too noisy to tell settings apart, so nothing was changed. Try again when it is idle."
-            elif arms and not any(a.status in ("tested", "dropped", "failed") for a in arms) and not r.per_request:
+            elif arms and not any(a.status in ("tested", "dropped", "rejected", "failed") for a in arms) and not r.per_request:
                 # candidates were planned but none could be measured (no free memory, no time): that is not "already the fastest"
                 r.outcome = "inconclusive"
                 r.reason_code = "not_tried"
@@ -765,6 +797,8 @@ class Tuner:
         points: list[tuple[str, Any]] = []
         for spec in tune_knobs.PER_REQUEST:
             if self.ctx.backend not in spec["backends"]:
+                continue
+            if self.ctx.family not in spec.get("families", (self.ctx.family,)):
                 continue
             if spec["answer"] != "exact" and not tune_knobs.allowed(spec["answer"], self.ctx):
                 continue

@@ -268,7 +268,7 @@ def engine_accepts_flag(engine: Path, flag: str, timeout: float = 15.0) -> bool:
     except (OSError, subprocess.SubprocessError):
         return False
     answer = f"{proc.stdout or ''}\n{proc.stderr or ''}"
-    return f"unknown argument: {flag}" not in answer
+    return f"unknown argument: {flag}" not in answer and f"unknown option: {flag}" not in answer   # (strata-inkling's words)
 
 
 # --------------------------------------------------------------------------- the job
