@@ -1634,6 +1634,8 @@ struct InkCudaRunner {
     int kv_dev_ctx = 0;           // Global KV positions resident in VRAM
     int kv_host_ctx = 0;          // Global KV positions offloaded to mapped pinned host RAM
     int kv_offload_mode = 0;      // 0 = auto, 1 = on (100% host global KV), -1 = off (VRAM-only)
+    // --vram-reserve-mib: VRAM the global KV must leave free on the primary GPU, at init and when it grows. Set before init().
+    size_t user_reserve_bytes = 0;
     int max_batch = 512;
     int swa_ring = 1024 + 512;
     int tree_cap = 16;
@@ -1952,8 +1954,12 @@ struct InkCudaRunner {
             const size_t ws_reserve = ((max_slots >= 8) ? (1280ull << 20) : (768ull << 20))
                                     + (m.man.has_dspark ? (256ull << 20) : 0ull)
                                     + (wddm_fl / 2);
-            const size_t avail_glob = (vfree > swa_kv_bytes + sconv_bytes + ws_reserve)
-                ? (vfree - swa_kv_bytes - sconv_bytes - ws_reserve) : 0u;
+            const size_t keep_free = swa_kv_bytes + sconv_bytes + ws_reserve + user_reserve_bytes;
+            const size_t avail_glob = (vfree > keep_free) ? (vfree - keep_free) : 0u;
+            if (user_reserve_bytes > 0) {
+                std::fprintf(stderr, "[InkCUDA] --vram-reserve-mib: global KV leaves %.0f MiB free (%.2f GiB free VRAM before KV)\n",
+                             (double)user_reserve_bytes / 1048576.0, (double)vfree / (1024.0 * 1024.0 * 1024.0));
+            }
             const size_t per_pos_glob = (size_t)std::max(1, n_glob_g0) * max_slots * per_visit_pos
                                       + (m.man.has_dspark ? (size_t)4096u : 0u);
             const int vram_fit_ctx = (n_glob_g0 > 0)
@@ -2280,7 +2286,8 @@ struct InkCudaRunner {
             size_t vf = 0, vt = 0;
             const int dev = m.ls_active ? m.stage_gpu[s] : m.primary_gpu;
             if (ink_cuda_mem_info(&vf, &vt, dev) != cudaSuccess) return false;
-            const size_t floor_b = 256ull << 20;
+            // 256 MiB floor, plus the --vram-reserve-mib room on the primary GPU
+            const size_t floor_b = (256ull << 20) + ((dev == m.primary_gpu) ? user_reserve_bytes : 0ull);
             const size_t need_b = (size_t)n_glob_s * max_slots * new_cap * per_pos;
             if (vf <= floor_b + need_b) {
                 const int tight_cap = std::min(max_ctx, ((needed_pos + 255) & ~255));

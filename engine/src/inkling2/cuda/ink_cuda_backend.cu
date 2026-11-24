@@ -239,6 +239,8 @@ public:
         if (!vf_graph_ok) {
             std::fprintf(stderr, "[inkling-cuda] sm_70 under volta-forever: disabling 1024-thread CUDA Graph capture by default\n");
         }
+        // --vram-reserve-mib: the global KV leaves this much free at init and when it grows
+        runner_->user_reserve_bytes = (opts.vram_reserve_mib > 0) ? ((size_t)opts.vram_reserve_mib << 20) : 0u;
         runner_->init(max_slots_, std::max(256, opts.max_ctx), std::max(64, opts.chunk), cuda_kvd, kv_offload_mode);
         eff_max_ctx_ = runner_->max_ctx;
 
