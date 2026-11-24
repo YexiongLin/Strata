@@ -239,8 +239,10 @@ public:
         if (!vf_graph_ok) {
             std::fprintf(stderr, "[inkling-cuda] sm_70 under volta-forever: disabling 1024-thread CUDA Graph capture by default\n");
         }
-        // --vram-reserve-mib: the global KV leaves this much free at init and when it grows
-        runner_->user_reserve_bytes = (opts.vram_reserve_mib > 0) ? ((size_t)opts.vram_reserve_mib << 20) : 0u;
+        // --vram-reserve-mib: the global KV leaves this much free at init and when it grows, so the GPU picture reader
+        // (loaded on the first picture) still fits after the KV has taken its share.
+        user_reserve_bytes_ = (opts.vram_reserve_mib > 0) ? ((size_t)opts.vram_reserve_mib << 20) : 0u;
+        runner_->user_reserve_bytes = user_reserve_bytes_;
         runner_->init(max_slots_, std::max(256, opts.max_ctx), std::max(64, opts.chunk), cuda_kvd, kv_offload_mode);
         eff_max_ctx_ = runner_->max_ctx;
 
@@ -835,12 +837,14 @@ public:
             (void)strata::ink::ink_cuda_mem_info(&vf0, &vt0, gpu_id_);
             if (!vit_.load(vision_path_, gpu_id_, verr)) {
                 vit_failed_ = true;
-                fprintf(stderr, "[inkling2-vision] GPU encoder unavailable, using the CPU one: %s (%.0f MiB free VRAM)\n",
-                        verr.c_str(), (double)vf0 / 1048576.0);
+                fprintf(stderr, "[inkling2-vision] GPU encoder unavailable, using the CPU one: %s (%.0f MiB free VRAM; "
+                                "--vram-reserve-mib keeps room for it)\n", verr.c_str(), (double)vf0 / 1048576.0);
                 return false;
             }
             (void)strata::ink::ink_cuda_mem_info(&vf1, &vt1, gpu_id_);
             const size_t held = (vf0 > vf1) ? (vf0 - vf1) : 0u;
+            // The reader's weights now hold part of the reserve: the KV growth only has to keep the rest free.
+            if (runner_) runner_->user_reserve_bytes = (user_reserve_bytes_ > held) ? (user_reserve_bytes_ - held) : 0u;
             fprintf(stderr, "[inkling2-vision] GPU encoder loaded on CUDA device %d: %.0f MiB of VRAM, %.0f MiB free\n",
                     gpu_id_, (double)held / 1048576.0, (double)vf1 / 1048576.0);
         }
@@ -930,6 +934,7 @@ private:
     cuvit::CudaVit vit_;
     bool vit_failed_ = false;
     bool vit_logged_first_ = false;
+    size_t user_reserve_bytes_ = 0;
     strata::ink::InkCudaModel model_;
     std::unique_ptr<strata::ink::InkCudaRunner> runner_;
     std::unique_ptr<strata::ink::InkDSpark> dspark_;

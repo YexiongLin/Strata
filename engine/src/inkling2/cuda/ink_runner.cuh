@@ -1634,7 +1634,8 @@ struct InkCudaRunner {
     int kv_dev_ctx = 0;           // Global KV positions resident in VRAM
     int kv_host_ctx = 0;          // Global KV positions offloaded to mapped pinned host RAM
     int kv_offload_mode = 0;      // 0 = auto, 1 = on (100% host global KV), -1 = off (VRAM-only)
-    // --vram-reserve-mib: VRAM the global KV must leave free on the primary GPU, at init and when it grows. Set before init().
+    // --vram-reserve-mib: VRAM the global KV must leave free on the primary GPU, at init and when it grows. Set before
+    // init(); the backend lowers it by what the GPU picture reader holds once it is loaded.
     size_t user_reserve_bytes = 0;
     int max_batch = 512;
     int swa_ring = 1024 + 512;
